@@ -1,0 +1,11 @@
+# 環境変数・秘密情報
+.env
+backend/.env
+
+# Python仮想環境
+.venv/
+backend/.venv/
+
+# Pythonキャッシュ
+__pycache__/
+*.pyc
