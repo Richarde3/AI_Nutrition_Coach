@@ -1,6 +1,7 @@
 from database import get_connection
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from datetime import date
 
 app = FastAPI()
 
@@ -355,3 +356,132 @@ def get_foods():
         }
         for row in rows
     ]
+
+
+class MealRecordCreate(BaseModel):
+    user_id: int
+    food_id: int
+    meal_date: date
+    meal_type: str
+    amount_g: float
+
+@app.post("/meal-records", status_code=201)
+def create_meal_record(meal: MealRecordCreate):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO meal_records (
+                    user_id,
+                    food_id,
+                    meal_date,
+                    meal_type,
+                    amount_g
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    user_id,
+                    food_id,
+                    meal_date,
+                    meal_type,
+                    amount_g;
+                """,
+                (
+                    meal.user_id,
+                    meal.food_id,
+                    meal.meal_date,
+                    meal.meal_type,
+                    meal.amount_g,
+                ),
+            )
+
+            row = cur.fetchone()
+
+        conn.commit()
+
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "food_id": row[2],
+        "meal_date": row[3],
+        "meal_type": row[4],
+        "amount_g": float(row[5]),
+    }   
+
+@app.get("/meal-records")
+def get_meal_records():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    m.id,
+                    m.user_id,
+                    m.food_id,
+                    f.name,
+                    m.meal_date,
+                    m.meal_type,
+                    m.amount_g,
+                    f.calories,
+                    f.protein,
+                    f.fat,
+                    f.carbohydrate
+                FROM meal_records m
+                JOIN foods f
+                    ON m.food_id = f.id
+                ORDER BY m.meal_date DESC, m.id DESC;
+                """
+            )
+
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "user_id": row[1],
+            "food_id": row[2],
+            "food_name": row[3],
+            "meal_date": row[4],
+            "meal_type": row[5],
+            "amount_g": float(row[6]),
+
+            "calories": float(row[7]) * float(row[6]) / 100,
+            "protein": float(row[8]) * float(row[6]) / 100,
+            "fat": float(row[9]) * float(row[6]) / 100,
+            "carbohydrate": float(row[10]) * float(row[6]) / 100,
+        }
+        for row in rows
+    ]
+
+@app.get("/daily-summary")
+def get_daily_summary(user_id: int, target_date: date):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(SUM(f.calories * m.amount_g / 100), 0),
+                    COALESCE(SUM(f.protein * m.amount_g / 100), 0),
+                    COALESCE(SUM(f.fat * m.amount_g / 100), 0),
+                    COALESCE(SUM(f.carbohydrate * m.amount_g / 100), 0)
+                FROM meal_records m
+                JOIN foods f
+                    ON m.food_id = f.id
+                WHERE
+                    m.user_id = %s
+                    AND m.meal_date = %s;
+                """,
+                (user_id, target_date),
+            )
+
+            row = cur.fetchone()
+
+    return {
+        "user_id": user_id,
+        "date": target_date,
+        "total_calories": round(float(row[0]), 2),
+        "total_protein": round(float(row[1]), 2),
+        "total_fat": round(float(row[2]), 2),
+        "total_carbohydrate": round(float(row[3]), 2),
+    }
