@@ -1084,3 +1084,200 @@ def delete_meal_record(
     }
 
 
+def calculate_nutrition_targets(profile):
+    age = profile["age"]
+    gender = profile["gender"]
+    height_cm = profile["height_cm"]
+    weight_kg = profile["weight_kg"]
+    activity_level = profile["activity_level"]
+    goal = profile["goal"]
+
+    if gender == "male":
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
+    else:
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
+
+    activity_factors = {
+        "low": 1.2,
+        "light": 1.375,
+        "moderate": 1.55,
+        "high": 1.725,
+        "very_high": 1.9,
+    }
+
+    activity_factor = activity_factors.get(
+        activity_level,
+        1.55
+    )
+
+    tdee = bmr * activity_factor
+
+    if goal == "lose":
+        target_calories = tdee - 300
+    elif goal == "gain":
+        target_calories = tdee + 300
+    else:
+        target_calories = tdee
+
+    protein = weight_kg * 1.6
+    fat = target_calories * 0.25 / 9
+    carbohydrate = (
+        target_calories
+        - protein * 4
+        - fat * 9
+    ) / 4
+
+    return {
+        "bmr": round(bmr, 2),
+        "tdee": round(tdee, 2),
+        "target_calories": round(target_calories, 2),
+        "target_protein": round(protein, 2),
+        "target_fat": round(fat, 2),
+        "target_carbohydrate": round(carbohydrate, 2),
+    }
+
+@app.get("/nutrition-targets")
+def get_nutrition_targets(
+    current_user_id: int = Depends(get_current_user_id)
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    age,
+                    gender,
+                    height_cm,
+                    weight_kg,
+                    activity_level,
+                    goal
+                FROM profiles
+                WHERE user_id = %s;
+                """,
+                (current_user_id,),
+            )
+
+            row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="プロフィールが見つかりません"
+        )
+
+    profile = {
+        "age": row[0],
+        "gender": row[1],
+        "height_cm": float(row[2]),
+        "weight_kg": float(row[3]),
+        "activity_level": row[4],
+        "goal": row[5],
+    }
+
+    return calculate_nutrition_targets(profile)    
+
+@app.get("/nutrition-status")
+def get_nutrition_status(
+    target_date: date,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # 1. プロフィール取得
+            cur.execute(
+                """
+                SELECT
+                    age,
+                    gender,
+                    height_cm,
+                    weight_kg,
+                    activity_level,
+                    goal
+                FROM profiles
+                WHERE user_id = %s;
+                """,
+                (current_user_id,),
+            )
+
+            profile_row = cur.fetchone()
+
+            if profile_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="プロフィールが見つかりません"
+                )
+
+            # 2. 指定日の摂取量を集計
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(SUM(f.calories * m.amount_g / 100), 0),
+                    COALESCE(SUM(f.protein * m.amount_g / 100), 0),
+                    COALESCE(SUM(f.fat * m.amount_g / 100), 0),
+                    COALESCE(SUM(f.carbohydrate * m.amount_g / 100), 0)
+                FROM meal_records m
+                JOIN foods f
+                    ON m.food_id = f.id
+                WHERE
+                    m.user_id = %s
+                    AND m.meal_date = %s;
+                """,
+                (current_user_id, target_date),
+            )
+
+            actual_row = cur.fetchone()
+
+    profile = {
+        "age": profile_row[0],
+        "gender": profile_row[1],
+        "height_cm": float(profile_row[2]),
+        "weight_kg": float(profile_row[3]),
+        "activity_level": profile_row[4],
+        "goal": profile_row[5],
+    }
+
+    targets = calculate_nutrition_targets(profile)
+
+    actual_calories = round(float(actual_row[0]), 2)
+    actual_protein = round(float(actual_row[1]), 2)
+    actual_fat = round(float(actual_row[2]), 2)
+    actual_carbohydrate = round(float(actual_row[3]), 2)
+
+    remaining_calories = round(
+        targets["target_calories"] - actual_calories,
+        2
+    )
+    remaining_protein = round(
+        targets["target_protein"] - actual_protein,
+        2
+    )
+    remaining_fat = round(
+        targets["target_fat"] - actual_fat,
+        2
+    )
+    remaining_carbohydrate = round(
+        targets["target_carbohydrate"] - actual_carbohydrate,
+        2
+    )
+
+    return {
+        "date": target_date,
+        "target": {
+            "calories": targets["target_calories"],
+            "protein": targets["target_protein"],
+            "fat": targets["target_fat"],
+            "carbohydrate": targets["target_carbohydrate"],
+        },
+        "actual": {
+            "calories": actual_calories,
+            "protein": actual_protein,
+            "fat": actual_fat,
+            "carbohydrate": actual_carbohydrate,
+        },
+        "remaining": {
+            "calories": remaining_calories,
+            "protein": remaining_protein,
+            "fat": remaining_fat,
+            "carbohydrate": remaining_carbohydrate,
+        },
+    }
