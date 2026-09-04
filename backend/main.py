@@ -485,3 +485,195 @@ def get_daily_summary(user_id: int, target_date: date):
         "total_fat": round(float(row[2]), 2),
         "total_carbohydrate": round(float(row[3]), 2),
     }
+
+
+class MealRecordUpdate(BaseModel):
+  food_id: int | None = None
+  meal_date: date | None = None
+  meal_type: str | None = None
+  amount_g: float | None = None
+
+
+@app.get("/meal-records/{meal_record_id}")
+def get_meal_record(meal_record_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    m.id,
+                    m.user_id,
+                    m.food_id,
+                    f.name,
+                    m.meal_date,
+                    m.meal_type,
+                    m.amount_g,
+                    f.calories,
+                    f.protein,
+                    f.fat,
+                    f.carbohydrate
+                FROM meal_records m
+                JOIN foods f
+                    ON m.food_id = f.id
+                WHERE m.id = %s;
+                """,
+                (meal_record_id,),
+            )
+
+            row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="指定された食事記録が見つかりません"
+        )
+
+    amount_g = float(row[6])
+
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "food_id": row[2],
+        "food_name": row[3],
+        "meal_date": row[4],
+        "meal_type": row[5],
+        "amount_g": amount_g,
+        "calories": round(float(row[7]) * amount_g / 100, 2),
+        "protein": round(float(row[8]) * amount_g / 100, 2),
+        "fat": round(float(row[9]) * amount_g / 100, 2),
+        "carbohydrate": round(float(row[10]) * amount_g / 100, 2),
+    }
+
+
+@app.patch("/meal-records/{meal_record_id}")
+def update_meal_record(
+    meal_record_id: int,
+    meal_update: MealRecordUpdate
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute(
+                """
+                SELECT
+                    food_id,
+                    meal_date,
+                    meal_type,
+                    amount_g
+                FROM meal_records
+                WHERE id = %s;
+                """,
+                (meal_record_id,),
+            )
+
+            current = cur.fetchone()
+
+            if current is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="指定された食事記録が見つかりません"
+                )
+
+            new_food_id = (
+                meal_update.food_id
+                if meal_update.food_id is not None
+                else current[0]
+            )
+
+            new_meal_date = (
+                meal_update.meal_date
+                if meal_update.meal_date is not None
+                else current[1]
+            )
+
+            new_meal_type = (
+                meal_update.meal_type
+                if meal_update.meal_type is not None
+                else current[2]
+            )
+
+            new_amount_g = (
+                meal_update.amount_g
+                if meal_update.amount_g is not None
+                else float(current[3])
+            )
+
+            cur.execute(
+                """
+                UPDATE meal_records
+                SET
+                    food_id = %s,
+                    meal_date = %s,
+                    meal_type = %s,
+                    amount_g = %s
+                WHERE id = %s
+                RETURNING
+                    id,
+                    user_id,
+                    food_id,
+                    meal_date,
+                    meal_type,
+                    amount_g;
+                """,
+                (
+                    new_food_id,
+                    new_meal_date,
+                    new_meal_type,
+                    new_amount_g,
+                    meal_record_id,
+                ),
+            )
+
+            updated = cur.fetchone()
+
+        conn.commit()
+
+    return {
+        "id": updated[0],
+        "user_id": updated[1],
+        "food_id": updated[2],
+        "meal_date": updated[3],
+        "meal_type": updated[4],
+        "amount_g": float(updated[5]),
+    }
+
+@app.delete("/meal-records/{meal_record_id}")
+def delete_meal_record(meal_record_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM meal_records
+                WHERE id = %s
+                RETURNING
+                    id,
+                    user_id,
+                    food_id,
+                    meal_date,
+                    meal_type,
+                    amount_g;
+                """,
+                (meal_record_id,),
+            )
+
+            deleted = cur.fetchone()
+
+        conn.commit()
+
+    if deleted is None:
+        raise HTTPException(
+            status_code=404,
+            detail="指定された食事記録が見つかりません"
+        )
+
+    return {
+        "message": "食事記録を削除しました",
+        "deleted_record": {
+            "id": deleted[0],
+            "user_id": deleted[1],
+            "food_id": deleted[2],
+            "meal_date": deleted[3],
+            "meal_type": deleted[4],
+            "amount_g": float(deleted[5]),
+        },
+    }
