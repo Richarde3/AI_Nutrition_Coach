@@ -1,9 +1,393 @@
 from database import get_connection
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from datetime import date
+from pwdlib import PasswordHash
+from datetime import date, datetime, timedelta, timezone
+
+import jwt
+from fastapi import Depends
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jwt.exceptions import InvalidTokenError
+
+
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 
 app = FastAPI()
+password_hash = PasswordHash.recommended()
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+def create_access_token(user_id: int):
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+
+    payload = {
+        "sub": str(user_id),
+        "exp": expire,
+    }
+
+    return jwt.encode(
+        payload,
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+def get_current_user_id(
+  token: str = Depends(oauth2_scheme)
+  ):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="認証情報を確認できません",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+        )
+
+        user_id = payload.get("sub")
+
+        if user_id is None:
+            raise credentials_exception
+
+        return int(user_id)
+
+    except (InvalidTokenError, ValueError):
+        raise credentials_exception
+
+@app.post("/login")
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends()
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    email,
+                    password_hash
+                FROM users
+                WHERE email = %s;
+                """,
+                (form_data.username,),
+            )
+
+            user = cur.fetchone()
+
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="メールアドレスまたはパスワードが正しくありません"
+        )
+
+    user_id = user[0]
+    stored_hash = user[2]
+
+    if not password_hash.verify(
+        form_data.password,
+        stored_hash
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="メールアドレスまたはパスワードが正しくありません"
+        )
+
+    access_token = create_access_token(user_id)
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+    }
+
+@app.get("/users/me")
+def get_current_user(
+    current_user_id: int = Depends(get_current_user_id)
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    email,
+                    created_at
+                FROM users
+                WHERE id = %s;
+                """,
+                (current_user_id,),
+            )
+
+            user = cur.fetchone()
+
+    if user is None:
+        raise HTTPException(
+            status_code=404,
+            detail="ユーザーが見つかりません"
+        )
+
+    return {
+        "id": user[0],
+        "email": user[1],
+        "created_at": user[2],
+    }
+
+class UserCreate(BaseModel):
+  email: str
+  password: str
+
+
+class ProfileCreate(BaseModel):
+    age: int | None = None
+    gender: str | None = None
+    height_cm: float | None = None
+    weight_kg: float | None = None
+    activity_level: str | None = None
+    goal: str | None = None
+
+
+class ProfileUpdate(BaseModel):
+    age: int | None = None
+    gender: str | None = None
+    height_cm: float | None = None
+    weight_kg: float | None = None
+    activity_level: str | None = None
+    goal: str | None = None
+
+@app.post("/profiles", status_code=201)
+def create_profile(
+    profile: ProfileCreate,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO profiles (
+                        current_user_id,
+                        age,
+                        gender,
+                        height_cm,
+                        weight_kg,
+                        activity_level,
+                        goal
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING
+                        id,
+                        user_id,
+                        age,
+                        gender,
+                        height_cm,
+                        weight_kg,
+                        activity_level,
+                        goal;
+                    """,
+                    (
+                        profile.user_id,
+                        profile.age,
+                        profile.gender,
+                        profile.height_cm,
+                        profile.weight_kg,
+                        profile.activity_level,
+                        profile.goal,
+                    ),
+                )
+
+                created = cur.fetchone()
+
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="プロフィールを登録できませんでした"
+                )
+
+        conn.commit()
+
+    return {
+        "id": created[0],
+        "user_id": created[1],
+        "age": created[2],
+        "gender": created[3],
+        "height_cm": float(created[4]) if created[4] is not None else None,
+        "weight_kg": float(created[5]) if created[5] is not None else None,
+        "activity_level": created[6],
+        "goal": created[7],
+    }
+
+
+@app.get("/profiles/me")
+def get_profile(
+    current_user_id: int = Depends(get_current_user_id)
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    user_id,
+                    age,
+                    gender,
+                    height_cm,
+                    weight_kg,
+                    activity_level,
+                    goal
+                FROM profiles
+                WHERE user_id = %s;
+                """,
+                (current_user_id,),
+            )
+
+            profile = cur.fetchone()
+
+    if profile is None:
+        raise HTTPException(
+            status_code=404,
+            detail="プロフィールが見つかりません"
+        )
+
+    return {
+        "id": profile[0],
+        "user_id": profile[1],
+        "age": profile[2],
+        "gender": profile[3],
+        "height_cm": float(profile[4]) if profile[4] is not None else None,
+        "weight_kg": float(profile[5]) if profile[5] is not None else None,
+        "activity_level": profile[6],
+        "goal": profile[7],
+    }
+
+
+@app.patch("/profiles/me")
+def update_profile(
+    profile_update: ProfileUpdate,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    age,
+                    gender,
+                    height_cm,
+                    weight_kg,
+                    activity_level,
+                    goal
+                FROM profiles
+                WHERE user_id = %s;
+                """,
+                (current_user_id,),
+            )
+
+            current = cur.fetchone()
+
+            if current is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="プロフィールが見つかりません"
+                )
+
+            new_age = (
+                profile_update.age
+                if profile_update.age is not None
+                else current[0]
+            )
+            new_gender = (
+                profile_update.gender
+                if profile_update.gender is not None
+                else current[1]
+            )
+            new_height_cm = (
+                profile_update.height_cm
+                if profile_update.height_cm is not None
+                else current[2]
+            )
+            new_weight_kg = (
+                profile_update.weight_kg
+                if profile_update.weight_kg is not None
+                else current[3]
+            )
+            new_activity_level = (
+                profile_update.activity_level
+                if profile_update.activity_level is not None
+                else current[4]
+            )
+            new_goal = (
+                profile_update.goal
+                if profile_update.goal is not None
+                else current[5]
+            )
+
+            cur.execute(
+                """
+                UPDATE profiles
+                SET
+                    age = %s,
+                    gender = %s,
+                    height_cm = %s,
+                    weight_kg = %s,
+                    activity_level = %s,
+                    goal = %s
+                WHERE user_id = %s
+                RETURNING
+                    id,
+                    user_id,
+                    age,
+                    gender,
+                    height_cm,
+                    weight_kg,
+                    activity_level,
+                    goal;
+                """,
+                (
+                    new_age,
+                    new_gender,
+                    new_height_cm,
+                    new_weight_kg,
+                    new_activity_level,
+                    new_goal,
+                    current_user_id,
+                ),
+            )
+
+            updated = cur.fetchone()
+
+        conn.commit()
+
+    return {
+        "id": updated[0],
+        "user_id": updated[1],
+        "age": updated[2],
+        "gender": updated[3],
+        "height_cm": float(updated[4]) if updated[4] is not None else None,
+        "weight_kg": float(updated[5]) if updated[5] is not None else None,
+        "activity_level": updated[6],
+        "goal": updated[7],
+    }
+
+
+
+
 
 foods = [
     {
@@ -359,14 +743,16 @@ def get_foods():
 
 
 class MealRecordCreate(BaseModel):
-    user_id: int
     food_id: int
     meal_date: date
     meal_type: str
     amount_g: float
 
 @app.post("/meal-records", status_code=201)
-def create_meal_record(meal: MealRecordCreate):
+def create_meal_record(
+    meal: MealRecordCreate,
+    current_user_id: int = Depends(get_current_user_id)
+):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -388,7 +774,7 @@ def create_meal_record(meal: MealRecordCreate):
                     amount_g;
                 """,
                 (
-                    meal.user_id,
+                    current_user_id,
                     meal.food_id,
                     meal.meal_date,
                     meal.meal_type,
@@ -407,10 +793,12 @@ def create_meal_record(meal: MealRecordCreate):
         "meal_date": row[3],
         "meal_type": row[4],
         "amount_g": float(row[5]),
-    }   
+    }
 
 @app.get("/meal-records")
-def get_meal_records():
+def get_meal_records(
+    current_user_id: int = Depends(get_current_user_id)
+):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -430,8 +818,10 @@ def get_meal_records():
                 FROM meal_records m
                 JOIN foods f
                     ON m.food_id = f.id
+                WHERE m.user_id = %s
                 ORDER BY m.meal_date DESC, m.id DESC;
-                """
+                """,
+                (current_user_id,),
             )
 
             rows = cur.fetchall()
@@ -445,7 +835,6 @@ def get_meal_records():
             "meal_date": row[4],
             "meal_type": row[5],
             "amount_g": float(row[6]),
-
             "calories": float(row[7]) * float(row[6]) / 100,
             "protein": float(row[8]) * float(row[6]) / 100,
             "fat": float(row[9]) * float(row[6]) / 100,
@@ -455,7 +844,10 @@ def get_meal_records():
     ]
 
 @app.get("/daily-summary")
-def get_daily_summary(user_id: int, target_date: date):
+def get_daily_summary(
+    target_date: date,
+    current_user_id: int = Depends(get_current_user_id)
+):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -472,13 +864,13 @@ def get_daily_summary(user_id: int, target_date: date):
                     m.user_id = %s
                     AND m.meal_date = %s;
                 """,
-                (user_id, target_date),
+                (current_user_id, target_date),
             )
 
             row = cur.fetchone()
 
     return {
-        "user_id": user_id,
+        "user_id": current_user_id,
         "date": target_date,
         "total_calories": round(float(row[0]), 2),
         "total_protein": round(float(row[1]), 2),
@@ -495,7 +887,10 @@ class MealRecordUpdate(BaseModel):
 
 
 @app.get("/meal-records/{meal_record_id}")
-def get_meal_record(meal_record_id: int):
+def get_meal_record(
+    meal_record_id: int,
+    current_user_id: int = Depends(get_current_user_id)
+):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -515,9 +910,10 @@ def get_meal_record(meal_record_id: int):
                 FROM meal_records m
                 JOIN foods f
                     ON m.food_id = f.id
-                WHERE m.id = %s;
+                WHERE m.id = %s 
+                AND m.user_id = %s;
                 """,
-                (meal_record_id,),
+                (meal_record_id, current_user_id),
             )
 
             row = cur.fetchone()
@@ -548,23 +944,26 @@ def get_meal_record(meal_record_id: int):
 @app.patch("/meal-records/{meal_record_id}")
 def update_meal_record(
     meal_record_id: int,
-    meal_update: MealRecordUpdate
+    meal_update: MealRecordUpdate,
+    current_user_id: int = Depends(get_current_user_id)
 ):
     with get_connection() as conn:
         with conn.cursor() as cur:
 
             cur.execute(
-                """
-                SELECT
-                    food_id,
-                    meal_date,
-                    meal_type,
-                    amount_g
-                FROM meal_records
-                WHERE id = %s;
-                """,
-                (meal_record_id,),
-            )
+    """
+    SELECT
+        food_id,
+        meal_date,
+        meal_type,
+        amount_g
+    FROM meal_records
+    WHERE id = %s
+      AND user_id = %s;
+    """,
+    (meal_record_id, current_user_id),
+)
+            
 
             current = cur.fetchone()
 
@@ -599,30 +998,32 @@ def update_meal_record(
             )
 
             cur.execute(
-                """
-                UPDATE meal_records
-                SET
-                    food_id = %s,
-                    meal_date = %s,
-                    meal_type = %s,
-                    amount_g = %s
-                WHERE id = %s
-                RETURNING
-                    id,
-                    user_id,
-                    food_id,
-                    meal_date,
-                    meal_type,
-                    amount_g;
-                """,
-                (
-                    new_food_id,
-                    new_meal_date,
-                    new_meal_type,
-                    new_amount_g,
-                    meal_record_id,
-                ),
-            )
+    """
+    UPDATE meal_records
+    SET
+        food_id = %s,
+        meal_date = %s,
+        meal_type = %s,
+        amount_g = %s
+    WHERE id = %s
+      AND user_id = %s
+    RETURNING
+        id,
+        user_id,
+        food_id,
+        meal_date,
+        meal_type,
+        amount_g;
+    """,
+    (
+        new_food_id,
+        new_meal_date,
+        new_meal_type,
+        new_amount_g,
+        meal_record_id,
+        current_user_id,
+    ),
+)
 
             updated = cur.fetchone()
 
@@ -638,23 +1039,27 @@ def update_meal_record(
     }
 
 @app.delete("/meal-records/{meal_record_id}")
-def delete_meal_record(meal_record_id: int):
+def delete_meal_record(
+    meal_record_id: int,
+    current_user_id: int = Depends(get_current_user_id)
+):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                DELETE FROM meal_records
-                WHERE id = %s
-                RETURNING
-                    id,
-                    user_id,
-                    food_id,
-                    meal_date,
-                    meal_type,
-                    amount_g;
-                """,
-                (meal_record_id,),
-            )
+    """
+    DELETE FROM meal_records
+    WHERE id = %s
+      AND user_id = %s
+    RETURNING
+        id,
+        user_id,
+        food_id,
+        meal_date,
+        meal_type,
+        amount_g;
+    """,
+    (meal_record_id, current_user_id),
+)
 
             deleted = cur.fetchone()
 
@@ -677,3 +1082,5 @@ def delete_meal_record(meal_record_id: int):
             "amount_g": float(deleted[5]),
         },
     }
+
+
