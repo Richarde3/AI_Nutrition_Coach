@@ -1281,3 +1281,277 @@ def get_nutrition_status(
             "carbohydrate": remaining_carbohydrate,
         },
     }
+
+def calculate_food_score(
+    food,
+    remaining_calories,
+    remaining_protein,
+    remaining_fat,
+    remaining_carbohydrate
+):
+    protein_score = 0
+    fat_score = 0
+    carbohydrate_score = 0
+
+    if remaining_protein > 0:
+        protein_score = min(
+            food["protein"] / remaining_protein,
+            1
+        )
+
+    if remaining_fat > 0:
+        fat_score = min(
+            food["fat"] / remaining_fat,
+            1
+        )
+
+    if remaining_carbohydrate > 0:
+        carbohydrate_score = min(
+            food["carbohydrate"] / remaining_carbohydrate,
+            1
+        )
+
+    nutrition_score = (
+        protein_score
+        + fat_score
+        + carbohydrate_score
+    )
+
+    # 残りカロリーに対して高カロリーすぎる食品を減点
+    calorie_penalty = 0
+
+    if remaining_calories > 0:
+        calorie_ratio = food["calories"] / remaining_calories
+
+        if calorie_ratio > 0.5:
+            calorie_penalty = calorie_ratio
+
+    total_score = nutrition_score - calorie_penalty
+
+    return max(total_score, 0)
+
+def calculate_recommended_amount(
+    food,
+    remaining_protein,
+    remaining_fat,
+    remaining_carbohydrate
+):
+    candidates = []
+
+    if remaining_protein > 0 and food["protein"] > 0:
+        amount_for_protein = (
+            remaining_protein / food["protein"]
+        ) * 100
+
+        candidates.append(amount_for_protein)
+
+    if remaining_fat > 0 and food["fat"] > 0:
+        amount_for_fat = (
+            remaining_fat / food["fat"]
+        ) * 100
+
+        candidates.append(amount_for_fat)
+
+    if remaining_carbohydrate > 0 and food["carbohydrate"] > 0:
+        amount_for_carbohydrate = (
+            remaining_carbohydrate / food["carbohydrate"]
+        ) * 100
+
+        candidates.append(amount_for_carbohydrate)
+
+    if not candidates:
+        return 100
+
+    recommended_amount = min(candidates)
+
+    # 極端な量にならないように制限
+    recommended_amount = max(
+    30,
+    min(recommended_amount, 200)
+)
+
+    return round(recommended_amount, 1)    
+
+
+@app.get("/food-suggestions")
+def get_food_suggestions(
+    target_date: date,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            # プロフィール取得
+            cur.execute(
+                """
+                SELECT
+                    age,
+                    gender,
+                    height_cm,
+                    weight_kg,
+                    activity_level,
+                    goal
+                FROM profiles
+                WHERE user_id = %s;
+                """,
+                (current_user_id,),
+            )
+
+            profile_row = cur.fetchone()
+
+            if profile_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="プロフィールが見つかりません"
+                )
+
+            profile = {
+                "age": profile_row[0],
+                "gender": profile_row[1],
+                "height_cm": float(profile_row[2]),
+                "weight_kg": float(profile_row[3]),
+                "activity_level": profile_row[4],
+                "goal": profile_row[5],
+            }
+
+            targets = calculate_nutrition_targets(profile)
+
+            # 指定日の摂取量を取得
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(SUM(f.calories * m.amount_g / 100), 0),
+                    COALESCE(SUM(f.protein * m.amount_g / 100), 0),
+                    COALESCE(SUM(f.fat * m.amount_g / 100), 0),
+                    COALESCE(SUM(f.carbohydrate * m.amount_g / 100), 0)
+                FROM meal_records m
+                JOIN foods f
+                    ON m.food_id = f.id
+                WHERE
+                    m.user_id = %s
+                    AND m.meal_date = %s;
+                """,
+                (current_user_id, target_date),
+            )
+
+            actual_row = cur.fetchone()
+
+            # 残りカロリー・PFCを計算
+            remaining_calories = max(
+                targets["target_calories"] - float(actual_row[0]),
+                0
+            )
+
+            remaining_protein = max(
+                targets["target_protein"] - float(actual_row[1]),
+                0
+            )
+
+            remaining_fat = max(
+                targets["target_fat"] - float(actual_row[2]),
+                0
+            )
+
+            remaining_carbohydrate = max(
+                targets["target_carbohydrate"] - float(actual_row[3]),
+                0
+            )
+
+            # 食品一覧を取得
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    calories,
+                    protein,
+                    fat,
+                    carbohydrate
+                FROM foods;
+                """
+            )
+
+            food_rows = cur.fetchall()
+
+    # 食品ごとのおすすめ度を計算
+    suggestions = []
+
+    for row in food_rows:
+        food = {
+            "id": row[0],
+            "name": row[1],
+            "calories": float(row[2]),
+            "protein": float(row[3]),
+            "fat": float(row[4]),
+            "carbohydrate": float(row[5]),
+        }
+
+        score = calculate_food_score(
+            food,
+            remaining_calories,
+            remaining_protein,
+            remaining_fat,
+            remaining_carbohydrate
+        )
+
+        recommended_amount = calculate_recommended_amount(
+            food,
+            remaining_protein,
+            remaining_fat,
+            remaining_carbohydrate
+        )
+
+        suggestions.append({
+            "food_id": food["id"],
+            "food_name": food["name"],
+            "score": round(score, 3),
+            "recommended_amount_g": recommended_amount,
+
+            "estimated_nutrition": {
+                "calories": round(
+                    food["calories"] * recommended_amount / 100,
+                    2
+                ),
+                "protein": round(
+                    food["protein"] * recommended_amount / 100,
+                    2
+                ),
+                "fat": round(
+                    food["fat"] * recommended_amount / 100,
+                    2
+                ),
+                "carbohydrate": round(
+                    food["carbohydrate"] * recommended_amount / 100,
+                    2
+                ),
+            },
+
+            "per_100g": {
+                "calories": food["calories"],
+                "protein": food["protein"],
+                "fat": food["fat"],
+                "carbohydrate": food["carbohydrate"],
+            }
+        })
+
+    # スコアが高い順に並べる
+    suggestions.sort(
+        key=lambda item: item["score"],
+        reverse=True
+    )
+
+    # 上位5件を返す
+    return {
+        "date": target_date,
+
+        "remaining": {
+            "calories": round(remaining_calories, 2),
+            "protein": round(remaining_protein, 2),
+            "fat": round(remaining_fat, 2),
+            "carbohydrate": round(remaining_carbohydrate, 2),
+        },
+
+        "suggestions": suggestions[:5],
+    }
+
+    
