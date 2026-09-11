@@ -1,6 +1,6 @@
 from database import get_connection
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
 from datetime import date, datetime, timedelta, timezone
 
@@ -41,10 +41,6 @@ def create_access_token(user_id: int):
         SECRET_KEY,
         algorithm=ALGORITHM,
     )
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
 
 def get_current_user_id(
   token: str = Depends(oauth2_scheme)
@@ -153,21 +149,55 @@ class UserCreate(BaseModel):
   email: str
   password: str
 
+@app.post("/users", status_code=201)
+def create_user(user: UserCreate):
+    hashed_password = password_hash.hash(user.password)
 
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (
+                    email,
+                    password_hash
+                )
+                VALUES (%s, %s)
+                RETURNING
+                    id,
+                    email,
+                    created_at;
+                """,
+                (
+                    user.email,
+                    hashed_password,
+                ),
+            )
+
+            created_user = cur.fetchone()
+
+        conn.commit()
+
+    return {
+        "id": created_user[0],
+        "email": created_user[1],
+        "created_at": created_user[2],
+    } 
+
+  
 class ProfileCreate(BaseModel):
-    age: int | None = None
+    age: int | None = Field(default=None, ge=1, le=120)
     gender: str | None = None
-    height_cm: float | None = None
-    weight_kg: float | None = None
+    height_cm: float | None = Field(default=None, gt=0, le=300)
+    weight_kg: float | None = Field(default=None, gt=0, le=500)
     activity_level: str | None = None
     goal: str | None = None
 
 
 class ProfileUpdate(BaseModel):
-    age: int | None = None
+    age: int | None = Field(default=None, ge=1, le=120)
     gender: str | None = None
-    height_cm: float | None = None
-    weight_kg: float | None = None
+    height_cm: float | None = Field(default=None, gt=0, le=300)
+    weight_kg: float | None = Field(default=None, gt=0, le=500)
     activity_level: str | None = None
     goal: str | None = None
 
@@ -182,7 +212,7 @@ def create_profile(
                 cur.execute(
                     """
                     INSERT INTO profiles (
-                        current_user_id,
+                        user_id,
                         age,
                         gender,
                         height_cm,
@@ -202,7 +232,7 @@ def create_profile(
                         goal;
                     """,
                     (
-                        profile.user_id,
+                        current_user_id,
                         profile.age,
                         profile.gender,
                         profile.height_cm,
@@ -387,44 +417,14 @@ def update_profile(
 
 
 
-
-
-foods = [
-    {
-        "id": 1,
-        "name": "ご飯",
-        "calories": 156.0,
-        "protein": 2.5,
-        "fat": 0.3,
-        "carbohydrate": 37.1
-    },
-    {
-        "id": 2,
-        "name": "鶏むね肉",
-        "calories": 108.0,
-        "protein": 23.3,
-        "fat": 1.5,
-        "carbohydrate": 0.0
-    },
-    {
-        "id": 3,
-        "name": "納豆",
-        "calories": 190.0,
-        "protein": 16.5,
-        "fat": 10.0,
-        "carbohydrate": 12.1
-    }
-]
-
-
 class FoodCreate(BaseModel):
     name: str
-    calories: float
-    protein: float
-    fat: float
-    carbohydrate: float
+    calories: float = Field(ge=0)
+    protein: float = Field(ge=0)
+    fat: float = Field(ge=0)
+    carbohydrate: float = Field(ge=0)
     display_unit: str | None = None
-    unit_weight: float | None = None
+    unit_weight: float | None = Field(default=None, gt=0)
 
 
 @app.get("/")
@@ -707,46 +707,12 @@ def delete_food(food_id: int):
     }
 
 
-@app.get("/foods")
-def get_foods():
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    id,
-                    name,
-                    calories,
-                    protein,
-                    fat,
-                    carbohydrate,
-                    display_unit,
-                    unit_weight
-                FROM foods
-                ORDER BY id;
-            """)
-
-            rows = cur.fetchall()
-
-    return [
-        {
-            "id": row[0],
-            "name": row[1],
-            "calories": float(row[2]),
-            "protein": float(row[3]),
-            "fat": float(row[4]),
-            "carbohydrate": float(row[5]),
-            "display_unit": row[6],
-            "unit_weight": float(row[7]) if row[7] is not None else None,
-        }
-        for row in rows
-    ]
-
 
 class MealRecordCreate(BaseModel):
-    food_id: int
+    food_id: int = Field(gt=0)
     meal_date: date
     meal_type: str
-    amount_g: float
+    amount_g: float = Field(gt=0, le=5000)
 
 @app.post("/meal-records", status_code=201)
 def create_meal_record(
@@ -880,10 +846,10 @@ def get_daily_summary(
 
 
 class MealRecordUpdate(BaseModel):
-  food_id: int | None = None
-  meal_date: date | None = None
-  meal_type: str | None = None
-  amount_g: float | None = None
+    food_id: int | None = Field(default=None, gt=0)
+    meal_date: date | None = None
+    meal_type: str | None = None
+    amount_g: float | None = Field(default=None, gt=0, le=5000)
 
 
 @app.get("/meal-records/{meal_record_id}")
