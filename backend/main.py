@@ -9,7 +9,7 @@ from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jwt.exceptions import InvalidTokenError
 
-
+from fastapi.middleware.cors import CORSMiddleware
 
 import os
 from dotenv import load_dotenv
@@ -20,6 +20,13 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 
 app = FastAPI()
 password_hash = PasswordHash.recommended()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
