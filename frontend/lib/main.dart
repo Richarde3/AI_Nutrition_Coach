@@ -148,22 +148,84 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
-class HomePage extends StatelessWidget {
+class HomePage extends StatefulWidget {
   final String token;
 
   const HomePage({super.key, required this.token});
 
   @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  int selectedIndex = 0;
+
+  static const List<String> titles = [
+    'ホーム',
+    '食事記録',
+    'おすすめ',
+    'マイページ',
+  ];
+
+  static const List<IconData> pageIcons = [
+    Icons.home_outlined,
+    Icons.restaurant_outlined,
+    Icons.lightbulb_outline,
+    Icons.person_outline,
+  ];
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('ホーム'),
+        title: Text(titles[selectedIndex]),
       ),
-      body: const Center(
-        child: Text(
-          'ログイン成功！',
-          style: TextStyle(fontSize: 24),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              pageIcons[selectedIndex],
+              size: 64,
+              color: Colors.green,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '${titles[selectedIndex]}画面',
+              style: const TextStyle(fontSize: 24),
+            ),
+          ],
         ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: selectedIndex,
+        onDestinationSelected: (index) {
+          setState(() {
+            selectedIndex = index;
+          });
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: 'ホーム',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.restaurant_outlined),
+            selectedIcon: Icon(Icons.restaurant),
+            label: '食事記録',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.lightbulb_outline),
+            selectedIcon: Icon(Icons.lightbulb),
+            label: 'おすすめ',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.person_outline),
+            selectedIcon: Icon(Icons.person),
+            label: 'マイページ',
+          ),
+        ],
       ),
     );
   }
