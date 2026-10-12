@@ -180,27 +180,29 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: Text(titles[selectedIndex]),
       ),
-      body: selectedIndex == 1
-    ? MealPage(token: widget.token)
-    : selectedIndex == 3
-        ? ProfilePage(token: widget.token)
-        : Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  pageIcons[selectedIndex],
-                  size: 64,
-                  color: Colors.green,
+      body: selectedIndex == 0
+    ? NutritionDashboardPage(token: widget.token)
+    : selectedIndex == 1
+        ? MealPage(token: widget.token)
+        : selectedIndex == 3
+            ? ProfilePage(token: widget.token)
+            : Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      pageIcons[selectedIndex],
+                      size: 64,
+                      color: Colors.green,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      '${titles[selectedIndex]}画面',
+                      style: const TextStyle(fontSize: 24),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                Text(
-                  '${titles[selectedIndex]}画面',
-                  style: const TextStyle(fontSize: 24),
-                ),
-              ],
-            ),
-          ),    
+              ), 
       
       bottomNavigationBar: NavigationBar(
         selectedIndex: selectedIndex,
@@ -1270,6 +1272,206 @@ class _MealPageState extends State<MealPage> {
               : MealHistoryPage(token: widget.token),
         ),
       ],
+    );
+  }
+}
+
+class NutritionDashboardPage extends StatefulWidget {
+  final String token;
+
+  const NutritionDashboardPage({
+    super.key,
+    required this.token,
+  });
+
+  @override
+  State<NutritionDashboardPage> createState() =>
+      _NutritionDashboardPageState();
+}
+
+class _NutritionDashboardPageState
+    extends State<NutritionDashboardPage> {
+  Map<String, dynamic>? nutritionStatus;
+  bool isLoading = true;
+  String? errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchNutritionStatus();
+  }
+
+  Future<void> fetchNutritionStatus() async {
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
+
+    try {
+      final now = DateTime.now();
+
+final targetDate =
+    '${now.year.toString().padLeft(4, '0')}-'
+    '${now.month.toString().padLeft(2, '0')}-'
+    '${now.day.toString().padLeft(2, '0')}';
+
+final uri = Uri.parse(
+  'http://127.0.0.1:8000/nutrition-status',
+).replace(
+  queryParameters: {
+    'target_date': targetDate,
+  },
+);
+
+final response = await http.get(
+  uri,
+  headers: {
+    'Authorization': 'Bearer ${widget.token}',
+  },
+);
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        setState(() {
+          nutritionStatus =
+              jsonDecode(response.body) as Map<String, dynamic>;
+          isLoading = false;
+        });
+      } else {
+  setState(() {
+    errorMessage =
+        '取得失敗：${response.statusCode}\n${response.body}';
+    isLoading = false;
+  });
+}
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        errorMessage = '通信エラー：$e';
+        isLoading = false;
+      });
+    }
+  }
+
+  Widget buildNutritionBar({
+    required String label,
+    required double actual,
+    required double target,
+    required double remaining,
+    required String unit,
+  }) {
+    final progress =
+        target > 0 ? (actual / target).clamp(0.0, 1.0).toDouble() : 0.0;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: progress,
+            minHeight: 12,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '${actual.toStringAsFixed(1)} / '
+            '${target.toStringAsFixed(1)} $unit',
+          ),
+          Text(
+            '残り ${remaining.toStringAsFixed(1)} $unit',
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return const Center(
+        child: CircularProgressIndicator(),
+      );
+    }
+
+    if (errorMessage != null) {
+      return Center(
+        child: Text(errorMessage!),
+      );
+    }
+
+    final data = nutritionStatus!;
+
+    final target =
+        data['target'] as Map<String, dynamic>;
+    final actual =
+        data['actual'] as Map<String, dynamic>;
+    final remaining =
+        data['remaining'] as Map<String, dynamic>;
+
+    double number(Map<String, dynamic> map, String key) {
+      return (map[key] as num).toDouble();
+    }
+
+    return RefreshIndicator(
+      onRefresh: fetchNutritionStatus,
+      child: ListView(
+        padding: const EdgeInsets.all(24),
+        children: [
+          Text(
+            '栄養状況：${data['date']}',
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          buildNutritionBar(
+            label: 'カロリー',
+            actual: number(actual, 'calories'),
+            target: number(target, 'calories'),
+            remaining: number(remaining, 'calories'),
+            unit: 'kcal',
+          ),
+
+          const Divider(),
+
+          buildNutritionBar(
+            label: 'タンパク質（P）',
+            actual: number(actual, 'protein'),
+            target: number(target, 'protein'),
+            remaining: number(remaining, 'protein'),
+            unit: 'g',
+          ),
+
+          buildNutritionBar(
+            label: '脂質（F）',
+            actual: number(actual, 'fat'),
+            target: number(target, 'fat'),
+            remaining: number(remaining, 'fat'),
+            unit: 'g',
+          ),
+
+          buildNutritionBar(
+            label: '炭水化物（C）',
+            actual: number(actual, 'carbohydrate'),
+            target: number(target, 'carbohydrate'),
+            remaining: number(remaining, 'carbohydrate'),
+            unit: 'g',
+          ),
+        ],
+      ),
     );
   }
 }
