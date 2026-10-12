@@ -184,25 +184,9 @@ class _HomePageState extends State<HomePage> {
     ? NutritionDashboardPage(token: widget.token)
     : selectedIndex == 1
         ? MealPage(token: widget.token)
-        : selectedIndex == 3
-            ? ProfilePage(token: widget.token)
-            : Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      pageIcons[selectedIndex],
-                      size: 64,
-                      color: Colors.green,
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      '${titles[selectedIndex]}画面',
-                      style: const TextStyle(fontSize: 24),
-                    ),
-                  ],
-                ),
-              ), 
+        : selectedIndex == 2
+            ? FoodSuggestionsPage(token: widget.token)
+            : ProfilePage(token: widget.token),
       
       bottomNavigationBar: NavigationBar(
         selectedIndex: selectedIndex,
@@ -1470,6 +1454,216 @@ final response = await http.get(
             remaining: number(remaining, 'carbohydrate'),
             unit: 'g',
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class FoodSuggestionsPage extends StatefulWidget {
+  final String token;
+
+  const FoodSuggestionsPage({
+    super.key,
+    required this.token,
+  });
+
+  @override
+  State<FoodSuggestionsPage> createState() =>
+      _FoodSuggestionsPageState();
+}
+
+class _FoodSuggestionsPageState extends State<FoodSuggestionsPage> {
+  List<Map<String, dynamic>> suggestions = [];
+  String? targetDate;
+  bool isLoading = true;
+  String? errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchSuggestions();
+  }
+
+  Future<void> fetchSuggestions() async {
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
+
+    final now = DateTime.now();
+    final date =
+        '${now.year.toString().padLeft(4, '0')}-'
+        '${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')}';
+
+    final uri = Uri.parse(
+      'http://127.0.0.1:8000/food-suggestions',
+    ).replace(
+      queryParameters: {
+        'target_date': date,
+      },
+    );
+
+    try {
+      final response = await http.get(
+        uri,
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+        },
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final items = data['suggestions'] as List<dynamic>;
+
+        setState(() {
+          targetDate = data['date'].toString();
+          suggestions = items
+              .map((item) => Map<String, dynamic>.from(item))
+              .toList();
+          isLoading = false;
+        });
+      } else {
+        setState(() {
+          errorMessage =
+              '取得失敗：${response.statusCode}\n${response.body}';
+          isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        errorMessage = '通信エラー：$e';
+        isLoading = false;
+      });
+    }
+  }
+
+  String formatNumber(dynamic value) {
+    if (value is num) {
+      return value.toStringAsFixed(1);
+    }
+    return '-';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return const Center(
+        child: CircularProgressIndicator(),
+      );
+    }
+
+    if (errorMessage != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(errorMessage!),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: fetchSuggestions,
+                child: const Text('再試行'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: fetchSuggestions,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            'おすすめ食品：$targetDate',
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text('現在の栄養状況に基づくおすすめです。'),
+          const SizedBox(height: 16),
+
+          if (suggestions.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(
+                child: Text('おすすめ食品がありません'),
+              ),
+            ),
+
+          for (final food in suggestions)
+            Card(
+              margin: const EdgeInsets.only(bottom: 12),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            food['food_name'].toString(),
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          'スコア：${food['score']}',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '推奨量：${food['recommended_amount_g']} g',
+                    ),
+                    const SizedBox(height: 8),
+
+                    const Text(
+                      '推奨量あたりの推定栄養素',
+                      style: TextStyle(fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(height: 4),
+
+                    Builder(
+                      builder: (context) {
+                        final nutrition =
+                            food['estimated_nutrition']
+                                as Map<String, dynamic>;
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'カロリー：'
+                              '${formatNumber(nutrition['calories'])} kcal',
+                            ),
+                            Text(
+                              'P：${formatNumber(nutrition['protein'])} g  '
+                              'F：${formatNumber(nutrition['fat'])} g  '
+                              'C：${formatNumber(nutrition['carbohydrate'])} g',
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
